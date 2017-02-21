@@ -1,0 +1,180 @@
+
+/* Source File: College2.csv */
+/* Source Path: /folders/myfolders/sasuser.v94 */
+
+%web_drop_table(WORK.IMPORT);
+
+FILENAME REFFILE '/folders/myfolders/sasuser.v94/College2.csv';
+
+/*Importing the data file */
+
+PROC IMPORT DATAFILE=REFFILE
+	DBMS=CSV
+	OUT=WORK.IMPORT;
+	GETNAMES=YES;
+RUN;
+
+PROC CONTENTS DATA=WORK.IMPORT; RUN;
+
+%web_open_table(WORK.IMPORT);
+
+PROC SORT DATA = IMPORT NODUPKEY; 
+BY UNITID;
+RUN;
+
+PROC FREQ DATA = IMPORT ORDER = FREQ; 
+TABLES STABBR; 
+RUN;
+
+/*Setting up ownership variable and converting cost to integers*/
+DATA IMPORT;
+SET IMPORT;
+     IF CONTROL = 1 THEN OWNERSHIP = 'Public            ';
+ELSE IF CONTROL = 2 THEN OWNERSHIP = 'Private nonprofit ';
+ELSE IF CONTROL = 3 THEN OWNERSHIP = 'Private for-profit';
+PUB_COST = input(NPT4_PUB, 10.);
+PRIV_COST = input(NPT4_PRIV, 10.);
+IF CURROPER = 1; 
+RUN;
+
+/*Format for cost brackets $2000 per bracket*/
+PROC FORMAT;
+ value AVG_TUT_COST   LOW - 5000  = '5000-'
+                     5001 - 7000  = '7000-'
+                     7001 - 9000  = '9000-'
+                     9001 - 11000 = '11000-'
+                    11001 - 13000 = '13000-'
+                    13001 - 15000 = '15000-'
+                    15001 - 17000 = '17000-'
+                    17001 - HIGH  = '17000+'
+ ; 
+ 
+/*Splitting data into public institutes*/
+DATA PUB_INST;
+SET IMPORT;
+IF CONTROL = 1 AND PUB_COST NE '' AND PREDDEG >= 3;
+RUN;
+
+/*Splitting data to private institute*/
+DATA PRIV_INST;
+SET IMPORT;
+IF CONTROL NE 1 AND PRIV_COST NE '' AND PREDDEG >= 3;
+RUN;
+ 
+PROC FREQ DATA = PUB_INST; 
+TABLES PUB_COST ;
+format PUB_COST AVG_TUT_COST.; 
+RUN;
+
+PROC FREQ DATA = PRIV_INST; 
+TABLES PRIV_COST ;
+format PRIV_COST AVG_TUT_COST.;
+RUN;
+
+/*Result state vs cost*/
+PROC TABULATE DATA = PUB_INST ORDER = FREQ;
+ CLASS STABBR ;
+ VAR PUB_COST ;
+TABLE STABBR, PUB_COST*N PUB_COST*MEAN ;
+RUN; 
+
+
+PROC TABULATE DATA = PRIV_INST ORDER = FREQ;
+ CLASS STABBR ;
+ VAR PRIV_COST ;
+TABLE STABBR, PRIV_COST*N PRIV_COST*MEAN ;
+RUN; 
+
+
+PROC FORMAT;
+VALUE $UNI_TYPE
+  1 = 'Public            '
+  2 = 'Private nonprofit '
+  3 = 'Private for-profit';
+ RUN;
+
+/*Sorting data for demogrpahics analysis*/ 
+DATA DEMGRPCS(KEEP = UNITID STABBR CONTROL OWNERSHIP UGDS WHITE UGDS_WHITE BLACK UGDS_BLACK 
+					HISPA UGDS_HISP ASIAN UGDS_ASIAN NHPI UGDS_NHPI MULTI UGDS_2MOR 
+					NRALN UGDS_NRA UNKWN UGDS_UNKN );
+SET IMPORT;
+IF PREDDEG >= 3;
+WHITE = FLOOR(UGDS * UGDS_WHITE);
+BLACK = FLOOR(UGDS * UGDS_BLACK);
+HISPA = FLOOR(UGDS * UGDS_HISP);
+ASIAN = FLOOR(UGDS * UGDS_ASIAN);
+NHPI  = FLOOR(UGDS * UGDS_NHPI);
+MULTI = FLOOR(UGDS * UGDS_2MOR);
+NRALN = FLOOR(UGDS * UGDS_NRA);
+UNKWN = FLOOR(UGDS * UGDS_UNKN);
+RUN;
+
+PROC TABULATE DATA = DEMGRPCS MISSING;
+CLASS OWNERSHIP STABBR;
+TABLE (STABBR =' ' ALL),
+       (OWNERSHIP ALL)*(N='Number'*F=COMMA7.0 COLPCTN='Percent'*F=COMMA7.1);
+TITLE5 "STATES AND UNIVERSITY TYPES";
+RUN;
+
+/*Getting the largest population served by each institution*/
+DATA DEMO1;
+SET DEMGRPCS;
+MAJOR_DEMO = largest(1, WHITE, BLACK, HISPA, ASIAN, NHPI, MULTI, NRALN);
+RUN;
+ 
+PROC SQL;
+ CREATE TABLE DEMO1 AS
+ SELECT STABBR, OWNERSHIP, LARGEST(1, WHITE, BLACK, HISPA, ASIAN, NHPI, MULTI, NRALN) 
+ AS MAJ_DEMO_COUNT,
+       CASE LARGEST(1, WHITE, BLACK, HISPA, ASIAN, NHPI, MULTI, NRALN) 
+         WHEN WHITE THEN 'WHITE'
+         WHEN BLACK THEN 'BLACK'
+         WHEN HISPA THEN 'HISPA'
+         WHEN ASIAN THEN 'ASIAN'
+         WHEN MULTI THEN 'MULTI'
+         WHEN NHPI  THEN 'NHPI'
+         WHEN NRALN THEN 'NRALN'
+       END AS MAJ_DEMO
+ FROM DEMGRPCS; 
+ QUIT; 
+
+/*Result state vs major demogrpahics served*/
+PROC TABULATE DATA = DEMO1 MISSING;
+CLASS MAJ_DEMO STABBR;
+TABLE (STABBR =' ' ALL),
+       (MAJ_DEMO ALL)*(N='Number'*F=COMMA7.0 ROWPCTN='Percent'*F=COMMA7.1);
+TITLE5 "STATES AND RACE MAJORITY UNIVERSITY TYPES";
+RUN;
+
+DATA TEXAS_DATA;
+SET IMPORT;
+IF STABBR = 'TX';
+IF SATVR25 <> NULL;
+SAT_SCORE = input(SATVR25, 10.);
+RUN;
+
+/*Data for institutes in Texas, arranging institutes by type of degree majorly offered*/
+PROC SQL;
+ CREATE TABLE TEXAS_DATA2 AS
+ SELECT CITY, SAT_SCORE, OWNERSHIP, LARGEST(1, PCIP13, PCIP14, PCIP15, PCIP23, PCIP24, PCIP45) 
+ AS MAJ_CAMP_COUNT,
+       CASE LARGEST(1, PCIP13, PCIP14, PCIP15, PCIP23, PCIP24, PCIP45) 
+         WHEN PCIP13 THEN 'Education         '
+         WHEN PCIP14 THEN 'Engineering       '
+         WHEN PCIP15 THEN 'Engineering Tech  '
+         WHEN PCIP23 THEN 'English Literature'
+         WHEN PCIP24 THEN 'Liberal Arts      '
+         WHEN PCIP45 THEN 'Social Sciences   '
+         ELSE 'OTHERS'
+       END AS CAMPUS_MAJOR
+ FROM TEXAS_DATA; 
+ QUIT; 
+
+/*Result - city in texas and the degree with SAT scores*/
+PROC TABULATE DATA = TEXAS_DATA2 MISSING;
+CLASS CITY CAMPUS_MAJOR ;
+VAR SAT_SCORE;
+TABLE (CITY=' ' * (CAMPUS_MAJOR=' ')),
+      (MEAN=' ' * SAT_SCORE='MEAN 25 PERCENTILE SAT'*F=COMMA7.1);
+Title5 "CITY AND CAMPUS MAJOR SAT SCORES IN TEXAS";
+RUN;
